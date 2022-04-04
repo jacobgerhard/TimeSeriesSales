@@ -1,0 +1,852 @@
+---
+title: "Forecasting Company Sales Over Time"
+subtitle: "PSTAT 174, University of California, Santa Barbara"
+author: "Jacob Gerhard"
+date: "12/03/2021"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+# Abstract
+Time series analysis consists of interpretation of metered data. Financial data is frequently collected at equally spaced intervals of time, and business analytics is often an implementation of such data. Specifically, companies record daily, weekly, monthly, and yearly sales for forecasting and diagnostics, i.e. evaluating company strengths and weaknesses. This project will determine a SARIMA model (seasonal autoregressive integrated moving average) that will predict future values of a company's monthly sales. Using the Box-Jenkins method, this project will cover transformations, differencing, model selection, stationarity and invertibility, and diagnostic checking using residuals. The analysis performed in this paper identifies a model within the scope of linear time series analysis that provides the ideal fit for the sales data provided.
+
+# Introduction
+Time series data is made up of dependent observations that are time-ordered and available at equally spaced intervals of time. The use of time series data within data analytics can be incredibly beneficial for a wide range of topics, such as understanding stochastic mechanisms or forecasting future data values. In this project, I will implement time series analysis with R on the data set "Sales of Company X, Jan. 1965 to May 1971" (Hipel and McLeod, 1994) in order to predict the expected sales of Company X over the course of May 1971 to December 1971. This can provide information such as when the company should focus on marketing to maximize sales, what months the company can improve sales, or the amount of product that needs to be produced to meet monthly demand. Implementing the Box-Jenkins method of analysis, I will determine a SARIMA model that will fit the historic data that I will utilize to predict future values. I found this particular data set interesting because Company X represents a general company, meaning the data analysis performed in this project can be applied to the sales of any company, where the industry does not influence my analysis. From my analysis, I concluded that the model that best fit the data is $$\nabla_1\nabla_{12}(1-0.2639_{(0.1263)}B-0.3596_{(0.1289)}B^2)\sqrt{U_t} = (1-1_{(0.0956)}B)(1-0.5127_{(0.2105)}B^{12})Z_t, \text{ }\text{ } Z_t\sim N(0, 1.783)$$. This model is used to predict the future monthly sales of Company X. Understanding model limitations should be considered when quantifying prediction inaccuracies
+
+# Data Analysis
+
+```{r, echo = F, results = "hide", message = F, warning = F, cache = T}
+library(tsdl)
+library(MASS)
+library(ggplot2)
+library(ggfortify)
+library(forecast)
+library(MuMIn)
+library(astsa)
+```
+
+## Understanding Data
+
+The data is a univariate time series consisting of 1 variable and 77 observations. The data is modeled by $X_t = \textrm{Sales of Company X, }$ $t = 1,2,3,\dots,77$. A plot of the data can be seen below:
+\
+
+```{r, echo = F, cache = T}
+xsales = tsdl[[358]]
+ts.plot(xsales, main = "Sales of Company X, Jan 1965 - May 1971", ylab = expression(X[t]))
+```
+
+The data is split into a training set of 72 observations and a test set of 5 observations, which will be used to determine the accuracy of our predictions later on. Analysis will be performed on the training data $U_t = X_{1}, X_{2}, \dots, X_{68}$. The plot of the training data is below:
+\
+
+```{r, echo = F, cache = T}
+xts = ts(xsales, start = c(1965,1), end = c(1971,5), frequency = 12)
+xtrain = xts[c(1:72)]
+xtest = xts[c(73:77)]
+
+ts.plot(xtrain, main = expression(paste("Training Data ", U[t])))
+xfit = lm(xtrain ~ as.numeric(1:length(xtrain)));abline(xfit, col = 'red')
+abline(h = mean(xtrain), col = 'blue')
+legend(0, 900, legend=c("Linear Trend", "Mean = 295.9167"), col=c("red", "blue"),
+       lty=1, cex=0.8)
+
+```
+
+Evaluating the data, there is obvious positive trend, a yearly seasonal component, and a few sharp changes in behavior at $t\approx41,49,64$. This model also has increasing variance. Transforming and differencing the data to a stationary series will generate constant variance and mean.
+
+
+## Transform Data to Stationary Series {#trans-stat}
+
+Currently, the data has histogram and acf as follows:
+\
+
+```{r, echo = F, cache = T, out.width = "50%"}
+hist(xtrain, col="light blue", xlab = expression(X[t]),
+     main = expression("Histogram of U"[t]))
+acf(xtrain, lag.max = 40, main = expression("ACF of U"[t]))
+```
+
+The histogram is skewed right, further demonstrating non-constant variance. The ACF has significant values that represent seasonality and trend. The three transformations that are performed on the data are Box-Cox, logarithmic, and square root.
+
+#### Choosing Transformation
+\
+The Box-Cox Transformation plot helps determine possible transformations of series $U_t$:
+\
+
+```{r, echo = F, cache = T}
+bcTransform = boxcox(xtrain ~ as.numeric(1:length(xtrain)), plotit = TRUE)
+lambda = bcTransform$x[which(bcTransform$y == max(bcTransform$y))]
+
+xtrain.bc = (1/lambda)*((xtrain^lambda)-1)
+xtrain.log = log(xtrain)
+xtrain.sqrt = sqrt(xtrain)
+```
+
+The predictive `boxcox()` command produces $\lambda = 0.1818$. The confidence interval is $\lambda \approx (-0.05, 0.5)$. Since both $\lambda = 0, \frac{1}{2}$ lie in the confidence interval, logarithmic and square root transformations should also be considered. The plots of the transformations and the original data are:
+\
+
+```{r, echo = F, cache = T}
+par(mfrow = c(2,2))
+ts.plot(xtrain, main = expression(paste("Original Data ", U[t])))
+ts.plot(xtrain.bc, main = expression(paste("Box-Cox Transformation ",
+                                           frac(1,lambda)(U[t]^lambda-1))))
+ts.plot(xtrain.log, main = expression(paste("Log Transformation ", ln(U[t]))))
+ts.plot(xtrain.sqrt, main = expression(paste("Square Root Transformation ", sqrt(U[t]))))
+```
+
+The transformations have reduced the variance. Plots of the histograms will further help determine the transformation that will most stabilize the variance.
+\
+
+```{r, echo = F, cache = T}
+par(mfrow = c(2,2))
+hist(xtrain, main = expression(paste("Histogram of ", U[t])))
+hist(xtrain.bc, main = expression(paste("Histogram of BC", (U[t]))))
+hist(xtrain.log, main = expression(paste("Histogram of ", ln(U[t]))))
+hist(xtrain.sqrt, main = expression(paste("Histogram of ", sqrt(U[t]))))
+```
+
+The histogram of $\sqrt{U_t}$ has the flattest curve, and therefore, most stabilized variance. The general result of the log transformation can be found in the [\textcolor{blue}{Conclusion}](#conc). The decomposition of $\sqrt{U_t}$ is below:
+\
+
+```{r, echo = F, cache = T}
+xtrans = xtrain.sqrt
+
+decomp = decompose(ts(as.ts(xtrans), frequency = 12))
+plot(decomp)
+```
+
+The variance-stabilized data still has seasonality and trend. Differencing the data can remove these features.
+
+#### Differencing Data
+\
+The data has seasonality every 12 months, so a difference at lag 12, $\nabla_{12}\sqrt{U_t}$ will remove the seasonal component. Differencing at lag 1 removes trend, represented as $\nabla_1\nabla_{12}\sqrt{U_t}$.
+\
+
+```{r, echo = F, cache = T}
+par(mfrow = c(2,2))
+
+ts.plot(xtrain, main = expression(paste("Original Data ", U[t])))
+xfit = lm(xtrain ~ as.numeric(1:length(xtrain)));abline(xfit, col = 'red')
+abline(h = mean(xtrain), col = 'blue')
+
+ts.plot(xtrans, main = expression(paste("Transformed Data ",sqrt(U[t]))))
+xtrans.fit = lm(xtrans ~ as.numeric(1:length(xtrans)));abline(xtrans.fit, col = 'red')
+abline(h = mean(xtrans), col = 'blue')
+
+xd12 = diff(xtrans, 12)
+ts.plot(xd12, main = expression(paste(sqrt(U[t]), " Differenced at Lag 12")))
+xd12.fit = lm(xd12~as.numeric(1:length(xd12)));abline(xd12.fit, col = "red")
+abline(h=mean(xd12), col = "blue")
+
+xstat = diff(xd12, 1)
+ts.plot(xstat, main = expression(paste(sqrt(U[t]), " Differenced at Lag 12 and 1")))
+xstat.fit = lm(xstat~as.numeric(1:length(xstat)));abline(xstat.fit, col = "red")
+abline(h=mean(xstat), col = "blue")
+```
+
+The stationary data set $S_t = \nabla_1\nabla_{12}\sqrt{U_t}$. Series $S_t$ has $\mu_{S_t} = -0.0123$ and $\textrm{Var}(S_t) = 3.8259$. The graph of $S_t$ displays constant variance and mean near $0$, meaning $S_t \sim N(-0.0123, 3.8259)$. The plots of the various ACF and histograms are below:
+\
+
+```{r, echo = F, cache = T}
+par(mfrow=c(2,2))
+acf(xtrain, lag.max = 40, main = expression(paste("ACF of ", U[t])))
+acf(xtrans, lag.max = 40, main = expression(paste("ACF of ", sqrt(U[t]))))
+acf(xd12, lag.max = 40, main = expression(paste("ACF of ", nabla[12], sqrt(U[t]))))
+acf(xstat, lag.max = 40, main = expression(paste("ACF of ", nabla[1], nabla[12], sqrt(U[t]))))
+hist(xtrain, main = expression(paste("Histogram of ", U[t])))
+hist(xtrans, main = expression(paste("Histogram of ", sqrt(U[t]))))
+hist(xd12, main = expression(paste("Histogram of ", nabla[12], sqrt(U[t]))))
+hist(xstat, main = expression(paste("Histogram of ", nabla[1], nabla[12], sqrt(U[t]))))
+```
+
+The histogram below is a more detailed version of the differenced and transformed data, displaying density rather than frequency, overlayed with a normal curve $N(\mu_{S_t},\sigma^2_{S_t})$:
+\
+
+```{r, echo = F, cache = T}
+hist(xstat, breaks = 15, col ='light blue', prob = TRUE,
+     main = expression(paste("Histogram of ", nabla[1], nabla[12], sqrt(U[t]))))
+curve(dnorm(x, mean(xstat), sqrt(var(xstat))), add = TRUE, col = 'blue')
+```
+
+Now that the data represents a somewhat normal distribution, the ACF and PACF provide the information necessary to identify the ideal SARIMA model.
+
+## Model Selection
+
+The SARIMA model can be identified by looking at lags in which the ACF and PACF have significant values.
+\
+
+```{r, echo = F, cache = T, out.width = "50%"}
+
+acf(xstat, lag.max = 40,
+    main = expression(paste("ACF of ", nabla[1], nabla[12], sqrt(U[t]))))
+pacf(xstat, lag.max = 40,
+     main = expression(paste("PACF of ", nabla[1], nabla[12], sqrt(U[t]))))
+```
+
+The ACF has significant (non-zero) values at lags $k = 1, 2$. The PACF has significant values at lags $k = 1, 8$. These are used to determine values $p, P, q, Q$ in $\textrm{SARIMA}(p,d,q)\times(P,D,Q)_{Q}$. It is known that $s = 12, d = 1, D = 1$ from the previous transformations. Possible models have values $p = 1,2; q = 0,1,8; P = 0,1; Q = 0,1$. The model with the best fit will have the lowest AICc. After checking all possible models, the three with the lowest AICc are:\
+$\textrm{SARIMA}(1,1,0)\times(0,1,1)_{12}$ with AICc = 220.2807\
+$\textrm{SARIMA}(1,1,0)\times(1,1,1)_{12}$ with AICc = 220.7522\
+$\textrm{SARIMA}(2,1,1)\times(0,1,1)_{12}$ with AICc = 220.1518\
+
+Implementing the `arima()` function, R estimates coefficients for $\phi_p, \Phi_P, \theta_q, \Theta_Q$.
+\
+
+```{r, echo = F, cache = T}
+A = arima(xtrans, order=c(2,1,1), seasonal = list(order = c(0,1,1), period = 12), method="ML")
+B = arima(xtrans, order=c(1,1,0), seasonal = list(order = c(0,1,1), period = 12), method="ML")
+C = arima(xtrans, order=c(1,1,0), seasonal = list(order = c(1,1,1), period = 12), method="ML")
+
+A
+B
+```
+
+#### Model A
+\
+$$\nabla_1\nabla_{12}(1-0.2639_{(0.1263)}B-0.3596_{(0.1289)}B^2)\sqrt{U_t} = (1-1_{(0.0956)}B)(1-0.5127_{(0.2105)}B^{12})Z_t, \text{ }\text{ } Z_t\sim N(0, 1.783)$$
+
+#### Model B
+\
+$$\nabla_1\nabla_{12}(1+0.5434_{(0.1133)}B)\sqrt{U_t} = (1-0.5403_{(0.2133)}B^{12})Z_t, \text{ }\text{ } Z_t\sim N(0, 2.035)$$
+
+Diagnostic checking is then performed on the two best models to estimate model accuracy and help choose which model will be used for prediction.
+
+## Diagnostic checking
+
+#### Stationarity and Invertibility
+\
+The `plot.roots()` function displays the roots of the models. The models are invertible if the MA roots (\textcolor{red}{$\star$}) lie outside of the unit circle. The models are stationary if the AR roots (\textcolor{red}{$\circ$}) lie outside of the unit circle. Obviously, the models are going to be stationary due to the transformations performed in [\textcolor{blue}{Transforming Data to Stationary Series}](#trans-stat).
+\
+
+```{r, echo = F, cache = T}
+plot.roots <- function(ar.roots=NULL, ma.roots=NULL, size=2, angles=FALSE,
+                       special=NULL,sqecial=NULL,my.pch=1,first.col="blue",
+                       second.col="red",main=NULL)
+{xylims <- c(-size,size)
+      omegas <- seq(0,2*pi,pi/500)
+      temp <- exp(complex(real=rep(0,length(omegas)),imag=omegas))
+      plot(Re(temp),Im(temp),typ="l",xlab="x",ylab="y",xlim=xylims,ylim=xylims,main=main)
+      abline(v=0,lty="dotted")
+      abline(h=0,lty="dotted")
+      if(!is.null(ar.roots))
+        {
+          points(Re(1/ar.roots),Im(1/ar.roots),col=first.col,pch=my.pch)
+          points(Re(ar.roots),Im(ar.roots),col=second.col,pch=my.pch)
+        }
+      if(!is.null(ma.roots))
+        {
+          points(Re(1/ma.roots),Im(1/ma.roots),pch="*",cex=1.5,col=first.col)
+          points(Re(ma.roots),Im(ma.roots),pch="*",cex=1.5,col=second.col)
+        }
+      if(angles)
+        {
+          if(!is.null(ar.roots))
+            {
+              abline(a=0,b=Im(ar.roots[1])/Re(ar.roots[1]),lty="dotted")
+              abline(a=0,b=Im(ar.roots[2])/Re(ar.roots[2]),lty="dotted")
+            }
+          if(!is.null(ma.roots))
+            {
+              sapply(1:length(ma.roots), function(j) abline(a=0,b=Im(ma.roots[j])/Re(ma.roots[j]),lty="dotted"))
+            }
+        }
+      if(!is.null(special))
+        {
+          lines(Re(special),Im(special),lwd=2)
+        }
+      if(!is.null(sqecial))
+        {
+          lines(Re(sqecial),Im(sqecial),lwd=2)
+        }
+}
+
+par(mfrow = c(2,2))
+
+A.arcoef = polyroot(c(1, 0.2639, 0.3596))
+A.macoef = polyroot(c(1, -1))
+A.smacoef = polyroot(c(1, -0.5217))
+
+
+B.arcoef = polyroot(c(1, -0.5434))
+B.smacoef = polyroot(c(1, -0.5403))
+
+
+plot.roots(A.arcoef, A.macoef, main = "Roots of Model A, Non-Seasonal")
+plot.roots(B.arcoef, NULL, main = "Roots of Model B, Non-Seasonal")
+plot.roots(NULL, A.smacoef, main = "Roots of Model A, Seasonal")
+plot.roots(NULL, B.smacoef, main = "Roots of Model B, Seasonal")
+```
+
+Model A is stationary but not invertible, Model B is stationary and invertible.
+
+#### Analysis of Residuals
+\
+The next step in diagnostic checking is analysis of residuals. The residuals of an accurate model should resemble Gaussian white noise
+\
+
+```{r, echo = F, cache = T, out.width = "50%"}
+A.fit = A
+B.fit = B
+
+A.res = residuals(A.fit)
+B.res = residuals(B.fit)
+
+ts.plot(A.res, main = "Residuals of Model A")
+A.res.fit = lm(A.res~as.numeric(1:length(A.res)));abline(A.res.fit, col ='red')
+abline(h=mean(A.res), col='blue')
+
+ts.plot(B.res, main = "Residuals of Model B")
+B.res.fit = lm(B.res~as.numeric(1:length(B.res)));abline(B.res.fit, col ='red')
+abline(h=mean(B.res), col='blue')
+```
+
+From the graphs above, Model B seems to be a better fit of the data. The graphs display data that resembles white noise with means $\mu_A = 0.1249$ and $\mu_B = 0.0335$. Plotting the Q-Q Plots and Histograms of the residuals can further display the distributions of models A and B.
+\
+
+```{r, echo = F, cache = T}
+par(mfrow = c(2,2))
+
+hist(A.res, col = "light blue", prob = TRUE, 
+     main = "Histogram of Residuals, Model A")
+curve(dnorm(x, mean(A.res), sqrt(var(A.res))), add=TRUE, col = "blue")
+
+hist(B.res, col = "light blue", prob = TRUE,
+     main = "Histogram of Residuals, Model B")
+curve(dnorm(x, mean(B.res), sqrt(var(B.res))), add=TRUE, col = "blue")
+
+qqnorm(A.res, main = "Normal Q-Q Plot, Model A")
+qqline(A.res,col="blue")
+
+qqnorm(B.res, main = "Normal Q-Q Plot, Model B")
+qqline(B.res,col="blue")
+```
+
+After viewing the histograms and Q-Q plots, residuals Model A seems to have a more normal distribution. Residuals of Model B are left-skewed. Examining the ACF and PACF graphs of the residuals will reveal if the residuals are correlated.
+\
+
+```{r, echo = F, cache = T}
+par(mfrow = c(2,2))
+
+acf(A.res, main = "ACF of Residuals, Model A")
+acf(B.res, main = "ACF of Residuals, Model B")
+
+pacf(A.res, main = "PACF of Residuals, Model A")
+pacf(B.res, main = "PACF of Residuals, Model B")
+```
+
+These plots show that Model A has residuals that completely resemble white noise. Further tests that are performed to help with model diagnostics are the (1) Shapiro-Wilkes Normality Test, (2) Box-Pierce Test, (3) Ljung-Box Test, and (4) McLeod-Li Test.
+
+##### Model A Tests
+\
+
+```{r, echo = F, cache = T}
+shapiro.test(A.res)
+Box.test(A.res, lag = 8, type=c("Box-Pierce"), fitdf = 4)
+Box.test(A.res, lag = 8, type=c("Ljung-Box"), fitdf = 4)
+Box.test((A.res)^2, lag = 8, type=c("Ljung-Box"), fitdf = 0)
+```
+
+##### Model B Tests
+\
+
+```{r, echo = F, cache = T}
+shapiro.test(B.res)
+Box.test(B.res, lag = 8, type=c("Box-Pierce"), fitdf = 2)
+Box.test(B.res, lag = 8, type=c("Ljung-Box"), fitdf = 2)
+Box.test((B.res)^2, lag = 8, type=c("Ljung-Box"), fitdf = 0)
+```
+
+Model A passes all tests because all p-values > 0.05. The residuals are normally distributed, uncorrelated, linearly independent, and non-linearly independent. Model B fails the Shapiro-Wilkes Normality Test and the McLeod-Li Test, meaning the residuals are not normally distributed and have some form of non-linear dependence. Model A passes diagnostic checking and will be used for forecasting.
+
+## Forecasting
+
+Using Model A, R can predict future values of our original time series.
+\
+
+```{r, echo = F, cache = T, out.width="50%"}
+fore.fit = A
+
+pred.A = predict(fore.fit, n.ahead = 5)
+up.A = pred.A$pred + 2*pred.A$se
+low.A = pred.A$pred - 2*pred.A$se
+
+ts.plot(xtrans, xlim = c(1, length(xtrans)+5), ylim = c(min(xtrans),max(up.A)),
+        main = "Predicted Values of Transformed Data")
+lines(up.A, col = "blue", lty = "dashed")
+lines(low.A, col = "blue", lty = "dashed")
+points((length(xtrans)+1):(length(xtrans)+5),pred.A$pred, col='red', pch = 1)
+lines(c(xtrans[72],pred.A$pred), x = c(72:77), col = 'red')
+#lines(c(xtrans[72],sqrt(xtest)), x = c(72:77))
+
+#err.trans = (sqrt(xtest)-pred.A$pred)
+#mean(err.trans^2)
+
+pred.orig = (pred.A$pred)^2
+up.orig = (up.A)^2
+low.orig = (low.A)^2
+
+ts.plot(xtrain, xlim = c(1, length(xtrain)+5), ylim = c(min(xtrain),max(up.orig)),
+        main = "Predicted Values of Original Data")
+lines(up.orig, col = 'blue', lty = 'dashed')
+lines(low.orig, col = 'blue', lty = 'dashed')
+points((length(xtrain)+1):(length(xtrain)+5), pred.orig, col = 'red')
+lines(c(xtrain[72],pred.orig), x = c(72:77), col = 'red')
+#lines(c(xtrain[72],xtest), x = c(72:77))
+
+#err.orig = xtest - pred.orig
+#mean(err.orig^2)
+```
+
+The transformed data has $\textrm{MSE}=8.6022$. The original data has $\textrm{MSE}=13116.72$.
+\
+
+```{r, echo = F, cache = T}
+xnum = xts[0:77]
+ts.plot(xnum, xlim = c(67,77), ylab = expression(X[t]),
+        main = "Predicted Values of Original Data (Zoomed)")
+lines(up.orig, col = 'blue', lty = 'dashed')
+lines(low.orig, col = 'blue', lty = 'dashed')
+points((length(xtrain)+1):(length(xtrain)+5), pred.orig, col="red")
+lines(c(xnum[72],pred.orig), x = c(72:77), col = 'red')
+```
+
+The previous predictive model can be modified to predict values past the range of the test set.
+\
+
+```{r, echo = F, cache = T, out.width = "50%"}
+ftr.fit = arima(sqrt(xts), order=c(2,1,1),
+                seasonal = list(order = c(0,1,1),period = 12), method="ML")
+
+pred.ftr = predict(ftr.fit, n.ahead = 7)
+up.ftr = pred.ftr$pred + 2*pred.ftr$se
+low.ftr = pred.ftr$pred - 2*pred.ftr$se
+
+ftr = (pred.ftr$pred)^2
+up = (up.ftr[1:7])^2
+low = (low.ftr[1:7])^2
+
+ts.plot(xnum, xlim = c(67,84), ylim = c(min(xnum),max(up)),
+        ylab = expression(X[t]), main = "Predicted Future Values (Zoomed)")
+lines(up, x = c(78:84), col = 'blue', lty = 'dashed')
+lines(low, x = c(78:84), col = 'blue', lty = 'dashed')
+points((length(xnum)+1):(length(xnum)+7), ftr, col="red")
+lines(c(xnum[77],ftr), x = c(77:84), col = 'red')
+
+ts.plot(xnum, xlim = c(1,84), ylim = c(min(xnum),max(up)),
+        ylab = expression(X[t]), main = "Predicted Future Values")
+lines(up, x = c(78:84), col = 'blue', lty = 'dashed')
+lines(low, x = c(78:84), col = 'blue', lty = 'dashed')
+points((length(xnum)+1):(length(xnum)+7), ftr, col="red")
+lines(c(xnum[77],ftr), x = c(77:84), col = 'red')
+```
+
+# Conclusion {#conc}
+The Box-Jenkins model of the data predicted future values of Company X's sales over the course of the rest of 1971. The predicted values had large MSE's, and the test data had points outside of the 95% prediction confidence interval. We can, however, assume that most of the predicted future data will lie within the 95% confidence interval provided except for a few outliers. We have still determined that the model $$\nabla_1\nabla_{12}(1-0.2639_{(0.1263)}B-0.3596_{(0.1289)}B^2)\sqrt{U_t} = (1-1_{(0.0956)}B)(1-0.5127_{(0.2105)}B^{12})Z_t, \text{ }\text{ } Z_t\sim N(0, 1.783)$$ is the best model for linear time series analysis on the data because of the normality and independence of residuals.If different transformations are performed on the data, such as logarithmic or Box-Cox, the residuals will display non-linear dependence and would require a different model representation for accurate prediction.The same goes for the model that was selected. Obviously, the model is not a perfect representation of the data, but it accurately reflects linear time series analysis using the Box-Jenkins Method. With more knowledge of time series analysis, a better model could be created to better predict sales of Company X.\
+This project was completed with the help of Professor Feldman.
+
+#
+
+\begin{thebibliography}{3}
+\bibitem{software}
+R Core Team (2017). R: A language and environment for statistical computing. R Foundation for Statistical Computing,Vienna, Austria. URL https://www.R-project.org/.
+\bibitem{data}
+Hipel and McLeod (1994) "Sales of Company X, Jan. 1965 to May 1971".
+\bibitem{lecture notes}
+Feldman, R. 2021, \textit{PSTAT 174 Lecture Notes}, Time Series PSTAT174, University of California, Santa Barbara.
+\bibitem{textbook}
+Shumay, R.H. \& Stoffer, D.S., (2017), \textit{Time Series Analysis and Its Applications: With R Examples}, Fourth Edition, Springer.
+\end{thebibliography}
+
+
+# Appendix
+
+## 1 Development Code
+
+#### 1.1 Necessary Libraries
+\
+```{r, fig.show = 'hide' , cache = T, eval = F}
+library(tsdl)
+library(MASS)
+library(ggplot2)
+library(ggfortify)
+library(forecast)
+library(MuMIn)
+library(astsa)
+```
+
+#### 1.2 Understanding Data
+\
+```{r, fig.show = 'hide' , cache = T,}
+# get data
+xsales = tsdl[[358]]
+
+# data information
+length(xsales)
+attr(xsales, "description")
+attr(xsales, "source")
+
+# set to ts
+xts = ts(xsales, start = c(1965,1), end = c(1971,5), frequency = 12)
+
+# view original plot
+ts.plot(xsales, main = "Sales of Company X, Jan 1965 - May 1971", ylab = expression(X[t]))
+
+# create training and test sets
+xts = ts(xsales, start = c(1965,1), end = c(1971,5), frequency = 12)
+xtrain = xts[c(1:72)]
+xtest = xts[c(73:77)]
+
+# mean and variance of xtrain
+mean(xtrain)
+var(xtrain)
+
+# view plot of training set
+ts.plot(xtrain, main = expression(paste("Training Data ", U[t])))
+xfit = lm(xtrain ~ as.numeric(1:length(xtrain)));abline(xfit, col = 'red')
+abline(h = mean(xtrain), col = 'blue')
+legend(0, 900, legend=c("Linear Trend", "Mean = 295.9167"), col=c("red", "blue"),
+       lty=1, cex=0.8)
+```
+
+#### 1.3 Transforming Data to Stationary Series
+\
+```{r, cache = T, fig.show = 'hide'}
+# view hist and acf of training data
+hist(xtrain, col="light blue", xlab = expression(X[t]),
+     main = expression("Histogram of U"[t]))
+acf(xtrain, lag.max = 40, main = expression("ACF of U"[t]))
+
+# box cox transform
+bcTransform = boxcox(xtrain ~ as.numeric(1:length(xtrain)), plotit = TRUE)
+lambda = bcTransform$x[which(bcTransform$y == max(bcTransform$y))]
+lambda
+xtrain.bc = (1/lambda)*((xtrain^lambda)-1)
+
+# log transform
+xtrain.log = log(xtrain)
+
+# sqrt transform
+xtrain.sqrt = sqrt(xtrain)
+
+# plot all transformations
+par(mfrow = c(2,2))
+par(mfrow = c(2,2))
+ts.plot(xtrain, main = expression(paste("Original Data ", U[t])))
+ts.plot(xtrain.bc, main = expression(paste("Box-Cox Transformation ",
+                                           frac(1,lambda)(U[t]^lambda-1))))
+ts.plot(xtrain.log, main = expression(paste("Log Transformation ", ln(U[t]))))
+ts.plot(xtrain.sqrt, main = expression(paste("Square Root Transformation ", sqrt(U[t]))))
+
+# plot all histograms
+par(mfrow = c(2,2))
+hist(xtrain, main = expression(paste("Histogram of ", U[t])))
+hist(xtrain.bc, main = expression(paste("Histogram of BC", (U[t]))))
+hist(xtrain.log, main = expression(paste("Histogram of ", ln(U[t]))))
+hist(xtrain.sqrt, main = expression(paste("Histogram of ", sqrt(U[t]))))
+
+# final transformed data
+xtrans = xtrain.sqrt
+
+# decomposition of data
+decomp = decompose(ts(as.ts(xtrans), frequency = 12))
+plot(decomp)
+
+# differencing lag 12 to remove seasonality
+xd12 = diff(xtrans, 12)
+var(xd12)
+mean(xd12)
+
+# differencing at lag 1 to remove trend
+xstat = diff(xd12, 1)
+var(xstat)
+mean(xstat)
+
+# plots of data
+par(mfrow = c(2,2))
+
+ts.plot(xtrain, main = expression(paste("Original Data ", U[t])))
+xfit = lm(xtrain ~ as.numeric(1:length(xtrain)));abline(xfit, col = 'red')
+abline(h = mean(xtrain), col = 'blue')
+
+ts.plot(xtrans, main = expression(paste("Transformed Data ",sqrt(U[t]))))
+xtrans.fit = lm(xtrans ~ as.numeric(1:length(xtrans)));abline(xtrans.fit, col = 'red')
+abline(h = mean(xtrans), col = 'blue')
+
+ts.plot(xd12, main = expression(paste(sqrt(U[t]), " Differenced at Lag 12")))
+xd12.fit = lm(xd12~as.numeric(1:length(xd12)));abline(xd12.fit, col = "red")
+abline(h=mean(xd12), col = "blue")
+
+ts.plot(xstat, main = expression(paste(sqrt(U[t]), " Differenced at Lag 12 and 1")))
+xstat.fit = lm(xstat~as.numeric(1:length(xstat)));abline(xstat.fit, col = "red")
+abline(h=mean(xstat), col = "blue")
+
+# acfs of different data
+par(mfrow=c(2,2))
+acf(xtrain, lag.max = 40, main = expression(paste("ACF of ", U[t])))
+acf(xtrans, lag.max = 40, main = expression(paste("ACF of ", sqrt(U[t]))))
+acf(xd12, lag.max = 40,
+    main = expression(paste("ACF of ", nabla[12], sqrt(U[t]))))
+acf(xstat, lag.max = 40,
+    main = expression(paste("ACF of ", nabla[1], nabla[12], sqrt(U[t]))))
+
+# histograms of different data
+hist(xtrain, main = expression(paste("Histogram of ", U[t])))
+hist(xtrans, main = expression(paste("Histogram of ", sqrt(U[t]))))
+hist(xd12, main = expression(paste("Histogram of ", nabla[12], sqrt(U[t]))))
+hist(xstat, main = expression(paste("Histogram of ", nabla[1], nabla[12], sqrt(U[t]))))
+
+# plot density histogram
+hist(xstat, breaks = 15, col ='light blue', prob = TRUE,
+     main = expression(paste("Histogram of ", nabla[1], nabla[12], sqrt(U[t]))))
+curve(dnorm(x, mean(xstat), sqrt(var(xstat))), add = TRUE, col = 'blue')
+```
+
+#### 1.4 Model Selection
+\
+```{r, cache = T, fig.show='hide'}
+# acf and pacf of stationary data
+acf(xstat, lag.max = 40,
+    main = expression(paste("ACF of ", nabla[1], nabla[12], sqrt(U[t]))))
+pacf(xstat, lag.max = 40,
+     main = expression(paste("PACF of ", nabla[1], nabla[12], sqrt(U[t]))))
+
+# finding lowest AICc
+#for (i in 1:2){
+#  for (j in c(0,1,8)){
+#    for (k in 0:1){
+#      for (l in ):1{
+#        print(i); print(j); print(k); print(l);
+#        print(AICc(arima(xtrans, order = c(i,1,j),
+#                         seasonal = list(order = c(k,1,l),period = 12),
+#                         method = "ML")))}}}}
+
+# possible models
+A = arima(xtrans, order=c(2,1,1),
+          seasonal = list(order = c(0,1,1), period = 12),method="ML")
+B = arima(xtrans, order=c(1,1,0),
+          seasonal = list(order = c(0,1,1), period = 12), method="ML")
+C = arima(xtrans, order=c(1,1,0),
+          seasonal = list(order = c(1,1,1), period = 12), method="ML")
+D = arima(xtrans, order=c(0,1,8),
+          seasonal = list(order = c(0,1,0), period = 12), method = "ML")
+
+# view model information
+A
+B
+C
+D
+```
+
+#### 1.5 Diagnostic Checking
+\
+```{r, cache = T, fig.show = 'hide'}
+
+# plot roots function
+plot.roots <- function(ar.roots=NULL, ma.roots=NULL, size=2, angles=FALSE, special=NULL, sqecial=NULL,my.pch=1,first.col="blue",second.col="red",main=NULL)
+{xylims <- c(-size,size)
+      omegas <- seq(0,2*pi,pi/500)
+      temp <- exp(complex(real=rep(0,length(omegas)),imag=omegas))
+      plot(Re(temp),Im(temp),typ="l",xlab="x",ylab="y",xlim=xylims,ylim=xylims,main=main)
+      abline(v=0,lty="dotted")
+      abline(h=0,lty="dotted")
+      if(!is.null(ar.roots))
+        {
+          points(Re(1/ar.roots),Im(1/ar.roots),col=first.col,pch=my.pch)
+          points(Re(ar.roots),Im(ar.roots),col=second.col,pch=my.pch)
+        }
+      if(!is.null(ma.roots))
+        {
+          points(Re(1/ma.roots),Im(1/ma.roots),pch="*",cex=1.5,col=first.col)
+          points(Re(ma.roots),Im(ma.roots),pch="*",cex=1.5,col=second.col)
+        }
+      if(angles)
+        {
+          if(!is.null(ar.roots))
+            {
+              abline(a=0,b=Im(ar.roots[1])/Re(ar.roots[1]),lty="dotted")
+              abline(a=0,b=Im(ar.roots[2])/Re(ar.roots[2]),lty="dotted")
+            }
+          if(!is.null(ma.roots))
+            {
+              sapply(1:length(ma.roots), function(j) abline(a=0,b=Im(ma.roots[j])/Re(ma.roots[j]),lty="dotted"))
+            }
+        }
+      if(!is.null(special))
+        {
+          lines(Re(special),Im(special),lwd=2)
+        }
+      if(!is.null(sqecial))
+        {
+          lines(Re(sqecial),Im(sqecial),lwd=2)
+        }
+}
+
+# plot roots, check stationarity of AR
+par(mfrow = c(2,2))
+
+A.arcoef = polyroot(c(1, 0.2639, 0.3596))
+A.macoef = polyroot(c(1, -1))
+A.smacoef = polyroot(c(1, -0.5217))
+
+B.arcoef = polyroot(c(1, -0.5434))
+B.smacoef = polyroot(c(1, -0.5403))
+
+plot.roots(A.arcoef, A.macoef, main = "Roots of Model A, Non-Seasonal")
+plot.roots(B.arcoef, NULL, main = "Roots of Model B, Non-Seasonal")
+plot.roots(NULL, A.smacoef, main = "Roots of Model A, Seasonal")
+plot.roots(NULL, B.smacoef, main = "Roots of Model B, Seasonal")
+
+# set model
+A.fit = A
+B.fit = B
+
+# get residuals
+A.res = residuals(A.fit)
+B.res = residuals(B.fit)
+mean(A.res)
+var(A.res)
+mean(B.res)
+var(B.res)
+
+# plots of residuals
+par(mfrow = c(2,2))
+
+ts.plot(A.res, main = "Residuals of Model A")
+A.res.fit = lm(A.res~as.numeric(1:length(A.res)));abline(A.res.fit, col ='red')
+abline(h=mean(A.res), col='blue')
+
+ts.plot(B.res, main = "Residuals of Model B")
+B.res.fit = lm(B.res~as.numeric(1:length(B.res)));abline(B.res.fit, col ='red')
+abline(h=mean(B.res), col='blue')
+par(mfrow = c(2,2))
+
+# hist of residuals
+hist(A.res, col = "light blue", prob = TRUE,
+     main = "Histogram of Residuals, Model A")
+curve(dnorm(x, mean(A.res), sqrt(var(A.res))), add=TRUE, col = "blue")
+
+hist(B.res, col = "light blue", prob = TRUE,
+     main = "Histogram of Residuals, Model B")
+curve(dnorm(x, mean(B.res), sqrt(var(B.res))), add=TRUE, col = "blue")
+
+
+# qq plots
+qqnorm(A.res, main = "Normal Q-Q Plot, Model A")
+qqline(A.res,col="blue")
+
+qqnorm(B.res, main = "Normal Q-Q Plot, Model B")
+qqline(B.res,col="blue")
+
+# acf and pacf of residuals
+par(mfrow = c(2,2))
+
+acf(A.res, main = "ACF of Residuals, Model A")
+acf(B.res, main = "ACF of Residuals, Model B")
+
+pacf(A.res, main = "PACF of Residuals, Model A")
+pacf(B.res, main = "PACF of Residuals, Model B")
+
+# shapiro test
+shapiro.test(A.res)
+shapiro.test(B.res)
+
+# box-pierce test
+Box.test(A.res, lag = 8, type=c("Box-Pierce"), fitdf = 4)
+Box.test(B.res, lag = 8, type=c("Box-Pierce"), fitdf = 2)
+
+# ljung-box test
+Box.test(A.res, lag = 8, type=c("Ljung-Box"), fitdf = 4)
+Box.test(B.res, lag = 8, type=c("Ljung-Box"), fitdf = 2)
+
+# mcleod-li test
+Box.test((A.res)^2, lag = 8, type=c("Ljung-Box"), fitdf = 0)
+Box.test((B.res)^2, lag = 8, type=c("Ljung-Box"), fitdf = 0)
+
+# yule-walker
+ar(A.res, aic = TRUE, order.max = NULL, method = c("yule-walker"))
+ar(B.res, aic = TRUE, order.max = NULL, method = c("yule-walker"))
+```
+
+#### 1.5 Forecasting
+\
+```{r, cache = T, fig.show = 'hide'}
+# forecast future values
+fore.fit = A
+forecast(fore.fit)
+
+# transformed data with predictions
+pred.A = predict(fore.fit, n.ahead = 5)
+up.A = pred.A$pred + 2*pred.A$se
+low.A = pred.A$pred - 2*pred.A$se
+
+ts.plot(xtrans, xlim = c(1, length(xtrans)+5), ylim = c(min(xtrans),max(up.A)),
+        main = "Predicted Values of Transformed Data")
+lines(up.A, col = "blue", lty = "dashed")
+lines(low.A, col = "blue", lty = "dashed")
+points((length(xtrans)+1):(length(xtrans)+5),pred.A$pred, col='red', pch = 1)
+lines(c(xtrans[72],pred.A$pred), x = c(72:77), col = 'red')
+lines(c(xtrans[72],sqrt(xtest)), x = c(72:77))
+
+# MSE training data
+err.trans = (sqrt(xtest)-pred.A$pred)
+mean(err.trans^2)
+
+# original data with predictions
+pred.orig = (pred.A$pred)^2
+up.orig = (up.A)^2
+low.orig = (low.A)^2
+
+ts.plot(xtrain, xlim = c(1, length(xtrain)+5), ylim = c(min(xtrain),max(up.orig)),
+        main = "Predicted Values of Original Data")
+lines(up.orig, col = 'blue', lty = 'dashed')
+lines(low.orig, col = 'blue', lty = 'dashed')
+points((length(xtrain)+1):(length(xtrain)+5), pred.orig, col = 'red')
+lines(c(xtrain[72],pred.orig), x = c(72:77), col = 'red')
+lines(c(xtrain[72],xtest), x = c(72:77))
+
+xnum = xts[0:77]
+ts.plot(xnum, xlim = c(67,77), ylab = expression(X[t]),
+        main = "Predicted Values of Original Data (Zoomed)")
+lines(up.orig, col = 'blue', lty = 'dashed')
+lines(low.orig, col = 'blue', lty = 'dashed')
+points((length(xtrain)+1):(length(xtrain)+5), pred.orig, col="red")
+lines(c(xnum[72],pred.orig), x = c(72:77), col = 'red')
+ftr.fit = arima(sqrt(xts), order=c(2,1,1),
+                seasonal = list(order = c(0,1,1),period = 12), method="ML")
+
+# MSE original data
+err.orig = xtest - pred.orig
+mean(err.orig^2)
+
+
+# predict future values past test set
+ftr = (pred.ftr$pred)^2
+up = (up.ftr[1:7])^2
+low = (low.ftr[1:7])^2
+
+ts.plot(xnum, xlim = c(67,84), ylim = c(min(xnum),max(up)),
+        ylab = expression(X[t]), main = "Predicted Future Values (Zoomed)")
+lines(up, x = c(78:84), col = 'blue', lty = 'dashed')
+lines(low, x = c(78:84), col = 'blue', lty = 'dashed')
+points((length(xnum)+1):(length(xnum)+7), ftr, col="red")
+lines(c(xnum[77],ftr), x = c(77:84), col = 'red')
+
+ts.plot(xnum, xlim = c(1,84), ylim = c(min(xnum),max(up)),
+        ylab = expression(X[t]), main = "Predicted Future Values")
+lines(up, x = c(78:84), col = 'blue', lty = 'dashed')
+lines(low, x = c(78:84), col = 'blue', lty = 'dashed')
+points((length(xnum)+1):(length(xnum)+7), ftr, col="red")
+lines(c(xnum[77],ftr), x = c(77:84), col = 'red')
+
+```
+
+
+
+
+
+
+
+
+
